@@ -1,4 +1,4 @@
-/*
+#/*
 Copyright 2025.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -63,7 +63,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	namespace := project.Spec.Namespace
+	namespace := project.Spec.ProjectName
 	owner := project.Spec.Owner
 
 	if owner == "" {
