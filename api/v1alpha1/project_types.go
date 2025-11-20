@@ -33,7 +33,7 @@ type ProjectSpec struct {
 	ProjectName string `json:"projectName"`
 	// ProjectID     string  `json:"projectId"` // <-- maybe is not useful
 	Namespace     string  `json:"namespace"`
-	Owner         string  `json:"owner"`
+	Owner         string  `json:"owner"` // <--- maybe is not useful
 	AuthSecretRef *string `json:"authSecretRef,omitempty"`
 	S4TEnabled    bool    `json:"s4tEnabled,omitempty"`
 }
