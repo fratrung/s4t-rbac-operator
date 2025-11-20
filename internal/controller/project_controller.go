@@ -71,22 +71,9 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, nil
 	}
 
-	// create namespace for the project
-	createNamespaceErr := r.CreateNamespace(ctx, namespace, project)
-	if createNamespaceErr != nil {
-		return ctrl.Result{}, createNamespaceErr
-	}
-
-	// create role for the user
-	createRoleError := r.CreateRole(ctx, namespace)
-	if createRoleError != nil {
-		return ctrl.Result{}, nil
-	}
-
-	// create role binding for the user
-	createRoleBindingErr := r.CreateRoleBinding(ctx, namespace, owner)
-	if createRoleBindingErr != nil {
-		return ctrl.Result{}, createRoleBindingErr
+	err := r.HandleCreateRBAC(ctx, namespace, project)
+	if err != nil {
+		return ctrl.Result{}, err
 	}
 
 	log.Info("RBAC setup completed", "namespace", namespace, "owner", owner)
@@ -94,6 +81,67 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 }
 
 // ----------------- Helper function for building a dinamic RBAC configuration for S4T -----------------------------------------------------------------
+
+// encapsulate all RBAC automatic generation
+func (r *ProjectReconciler) HandleCreateRBAC(ctx context.Context, namespace string, project s4tv1alpha1.Project) error {
+	createNamespaceErr := r.CreateNamespace(ctx, namespace, project)
+	if createNamespaceErr != nil {
+		return createNamespaceErr
+	}
+
+	createRoleError := r.CreateRole(ctx, namespace)
+	if createRoleError != nil {
+		return createRoleError
+	}
+
+	createRoleBindingErr := r.CreateRoleBinding(ctx, namespace, project.Spec.Owner)
+	if createRoleBindingErr != nil {
+		return createRoleBindingErr
+	}
+	return nil
+}
+
+func (r *ProjectReconciler) CreateNamespace(ctx context.Context, namespace string, project s4tv1alpha1.Project) error {
+	ns := &corev1.Namespace{}
+	err := r.Get(ctx, types.NamespacedName{Name: namespace}, ns)
+	if errors.IsNotFound(err) {
+		ns = r.buildNamespace(namespace, project.Spec.ProjectName)
+		if createError := r.Create(ctx, ns); createError != nil {
+			return createError
+		}
+	} else {
+		return err
+	}
+	return nil
+}
+
+func (r *ProjectReconciler) CreateRole(ctx context.Context, namespace string) error {
+	role := &rbacv1.Role{}
+	err := r.Get(ctx, types.NamespacedName{Name: "project-owner", Namespace: namespace}, role)
+	if errors.IsNotFound(err) {
+		role = r.buildRole(namespace)
+		if createRoleError := r.Create(ctx, role); createRoleError != nil {
+			return createRoleError
+		}
+	} else {
+		return err
+	}
+	return nil
+}
+
+func (r *ProjectReconciler) CreateRoleBinding(ctx context.Context, namespace string, owner string) error {
+	rb := &rbacv1.RoleBinding{}
+	err := r.Get(ctx, types.NamespacedName{Name: "project-owner-bindnig", Namespace: namespace}, rb)
+	if errors.IsNotFound(err) {
+		rb = r.buildRoleBinding(namespace, owner)
+		if createRoleBindingErr := r.Create(ctx, rb); createRoleBindingErr != nil {
+			return createRoleBindingErr
+		}
+	} else {
+		return err
+	}
+	return nil
+}
 
 func (r *ProjectReconciler) buildNamespace(namespace string, projectName string) *corev1.Namespace {
 	return &corev1.Namespace{
@@ -141,48 +189,6 @@ func (r *ProjectReconciler) buildRoleBinding(namespace string, owner string) *rb
 			Name:     "project-owner",
 		},
 	}
-}
-
-func (r *ProjectReconciler) CreateNamespace(ctx context.Context, namespace string, project s4tv1alpha1.Project) error {
-	ns := &corev1.Namespace{}
-	err := r.Get(ctx, types.NamespacedName{Name: namespace}, ns)
-	if errors.IsNotFound(err) {
-		ns = r.buildNamespace(namespace, project.Spec.ProjectName)
-		if createError := r.Create(ctx, ns); createError != nil {
-			return createError
-		}
-	} else {
-		return err
-	}
-	return nil
-}
-
-func (r *ProjectReconciler) CreateRole(ctx context.Context, namespace string) error {
-	role := &rbacv1.Role{}
-	err := r.Get(ctx, types.NamespacedName{Name: "project-owner", Namespace: namespace}, role)
-	if errors.IsNotFound(err) {
-		role = r.buildRole(namespace)
-		if createRoleError := r.Create(ctx, role); createRoleError != nil {
-			return createRoleError
-		}
-	} else {
-		return err
-	}
-	return nil
-}
-
-func (r *ProjectReconciler) CreateRoleBinding(ctx context.Context, namespace string, owner string) error {
-	rb := &rbacv1.RoleBinding{}
-	err := r.Get(ctx, types.NamespacedName{Name: "project-owner-bindnig", Namespace: namespace}, rb)
-	if errors.IsNotFound(err) {
-		rb = r.buildRoleBinding(namespace, owner)
-		if createRoleBindingErr := r.Create(ctx, rb); createRoleBindingErr != nil {
-			return createRoleBindingErr
-		}
-	} else {
-		return err
-	}
-	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
