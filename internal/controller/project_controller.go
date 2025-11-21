@@ -1,4 +1,4 @@
-#/*
+/*
 Copyright 2025.
 
 Licensed under the Apache License, Version 2.0 (the "License");
@@ -131,7 +131,7 @@ func (r *ProjectReconciler) CreateRole(ctx context.Context, namespace string) er
 
 func (r *ProjectReconciler) CreateRoleBinding(ctx context.Context, namespace string, owner string) error {
 	rb := &rbacv1.RoleBinding{}
-	err := r.Get(ctx, types.NamespacedName{Name: "project-owner-bindnig", Namespace: namespace}, rb)
+	err := r.Get(ctx, types.NamespacedName{Name: "project-owner-binding", Namespace: namespace}, rb)
 	if errors.IsNotFound(err) {
 		rb = r.buildRoleBinding(namespace, owner)
 		if createRoleBindingErr := r.Create(ctx, rb); createRoleBindingErr != nil {
