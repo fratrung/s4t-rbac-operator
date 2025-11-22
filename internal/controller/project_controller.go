@@ -24,14 +24,19 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	s4tv1alpha1 "s4t-rbac-operator/api/v1alpha1"
 
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+// finalizer used to avoiding CR project deletion before the cleanup of the Rbac Operator
+const projectFinalizer = "s4t.s4t.io/finalizer"
 
 // ProjectReconciler reconciles a Project object
 type ProjectReconciler struct {
@@ -63,83 +68,156 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	namespace := project.Spec.ProjectName
-	owner := project.Spec.Owner
+	if !project.ObjectMeta.DeletionTimestamp.IsZero() {
+		log.Info("Project resource is being deleted, starting cleanup", "name", project.Name, "namespace", project.Namespace)
+		return r.handleRBACDeletion(ctx, &project)
+	}
 
-	if owner == "" {
+	if project.Spec.Owner == "" {
 		log.Info("Project has no owner set (webhook must populate spec.owner field")
 		return ctrl.Result{}, nil
 	}
 
-	err := r.HandleCreateRBAC(ctx, namespace, project)
-	if err != nil {
-		return ctrl.Result{}, err
+	log.Info("Reconciling Project resource", "name", project.Name, "namespace", project.Namespace, "generation", project.Generation)
+
+	// Example of Updating RBAC
+	if project.Status.RBACReady && (project.Status.S4TProjectID != project.Spec.ProjectName ||
+		project.Annotations["last-owner"] != project.Spec.Owner) {
+		log.Info("Detected spec change --> reconfiguring RBAC ")
+
+		updateErr := r.cleanUpRBAC(ctx, project.Spec.ProjectName)
+		if updateErr != nil {
+			return ctrl.Result{}, updateErr
+		}
+
+		// TODO --> (implement) apply the desired state
 	}
 
-	log.Info("RBAC setup completed", "namespace", namespace, "owner", owner)
-	return ctrl.Result{}, nil
+	err := r.handleCreateRBAC(ctx, &project)
+	if err != nil {
+		return ctrl.Result{}, err
+	} else {
+		log.Info("RBAC setup completed", "namespace", project.Spec.ProjectName, "owner", project.Spec.Owner)
+		return ctrl.Result{}, nil
+	}
+
 }
 
-// ----------------- Helper function for building a dinamic RBAC configuration for S4T -----------------------------------------------------------------
+// ----------------- Functions for manage a dinamic RBAC configuration that reflects S4T Projects -----------------------------------------------------------------
 
-// encapsulate all RBAC automatic generation
-func (r *ProjectReconciler) HandleCreateRBAC(ctx context.Context, namespace string, project s4tv1alpha1.Project) error {
-	createNamespaceErr := r.CreateNamespace(ctx, namespace, project)
+func (r *ProjectReconciler) handleCreateRBAC(ctx context.Context, project *s4tv1alpha1.Project) error {
+	log := logf.FromContext(ctx)
+
+	log.Info("Starting RBAC setup",
+		"projectName", project.Spec.ProjectName,
+		"owner", project.Spec.Owner)
+
+	if !controllerutil.ContainsFinalizer(project, projectFinalizer) {
+		log.Info("Adding finalizer to Project", "finalizer", projectFinalizer)
+		controllerutil.AddFinalizer(project, projectFinalizer)
+		err := r.Update(ctx, project)
+		if err != nil {
+			return err
+		}
+	}
+
+	namespace := project.Spec.ProjectName
+
+	createNamespaceErr := r.createNamespace(ctx, namespace, project)
 	if createNamespaceErr != nil {
 		return createNamespaceErr
 	}
 
-	createRoleError := r.CreateRole(ctx, namespace)
+	createRoleError := r.createRole(ctx, namespace)
 	if createRoleError != nil {
 		return createRoleError
 	}
 
-	createRoleBindingErr := r.CreateRoleBinding(ctx, namespace, project.Spec.Owner)
+	createRoleBindingErr := r.createRoleBinding(ctx, namespace, project.Spec.Owner)
 	if createRoleBindingErr != nil {
 		return createRoleBindingErr
 	}
+
+	log.Info("RBAC setup completed successfully", "namespace", namespace, "owner", project.Spec.Owner)
+
+	project.Status.NamespaceReady = true
+	project.Status.RBACReady = true
+
+	apimeta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: project.Generation,
+		Reason:             "RBACConfigured",
+		Message:            "RBAC and namespace created successfully",
+	})
+
+	if err := r.Status().Update(ctx, project); err != nil {
+		return err
+	}
+
 	return nil
 }
 
-func (r *ProjectReconciler) CreateNamespace(ctx context.Context, namespace string, project s4tv1alpha1.Project) error {
+func (r *ProjectReconciler) handleRBACDeletion(ctx context.Context, project *s4tv1alpha1.Project) (ctrl.Result, error) {
+	if err := r.cleanUpRBAC(ctx, project.Spec.ProjectName); err != nil {
+		return ctrl.Result{}, err
+	}
+	controllerutil.RemoveFinalizer(project, projectFinalizer)
+	updateErr := r.Update(ctx, project)
+	if updateErr != nil {
+		return ctrl.Result{}, updateErr
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *ProjectReconciler) createNamespace(ctx context.Context, namespace string, project *s4tv1alpha1.Project) error {
+	log := logf.FromContext(ctx)
 	ns := &corev1.Namespace{}
 	err := r.Get(ctx, types.NamespacedName{Name: namespace}, ns)
-	if errors.IsNotFound(err) {
-		ns = r.buildNamespace(namespace, project.Spec.ProjectName)
-		if createError := r.Create(ctx, ns); createError != nil {
-			return createError
-		}
-	} else {
+	if err != nil && !errors.IsNotFound(err) {
 		return err
 	}
+	if errors.IsNotFound(err) {
+		log.Info("Creating Namespace", "name", namespace)
+		ns = r.buildNamespace(namespace, project.Spec.ProjectName)
+		return r.Create(ctx, ns)
+	}
+	log.Info("Namespace already exists", "name", namespace)
 	return nil
 }
 
-func (r *ProjectReconciler) CreateRole(ctx context.Context, namespace string) error {
+func (r *ProjectReconciler) createRole(ctx context.Context, namespace string) error {
+	log := logf.FromContext(ctx)
 	role := &rbacv1.Role{}
 	err := r.Get(ctx, types.NamespacedName{Name: "project-owner", Namespace: namespace}, role)
-	if errors.IsNotFound(err) {
-		role = r.buildRole(namespace)
-		if createRoleError := r.Create(ctx, role); createRoleError != nil {
-			return createRoleError
-		}
-	} else {
+	if err != nil && !errors.IsNotFound(err) {
 		return err
 	}
+
+	if errors.IsNotFound(err) {
+		log.Info("Creating Role", "name", "project-owner", "namespace", namespace)
+		role = r.buildRole(namespace)
+		return r.Create(ctx, role)
+	}
+
+	log.Info("Role already exists", "name", "project-owner", "namespace", namespace)
 	return nil
 }
 
-func (r *ProjectReconciler) CreateRoleBinding(ctx context.Context, namespace string, owner string) error {
+func (r *ProjectReconciler) createRoleBinding(ctx context.Context, namespace string, owner string) error {
+	log := logf.FromContext(ctx)
 	rb := &rbacv1.RoleBinding{}
 	err := r.Get(ctx, types.NamespacedName{Name: "project-owner-binding", Namespace: namespace}, rb)
-	if errors.IsNotFound(err) {
-		rb = r.buildRoleBinding(namespace, owner)
-		if createRoleBindingErr := r.Create(ctx, rb); createRoleBindingErr != nil {
-			return createRoleBindingErr
-		}
-	} else {
+	if err != nil && !errors.IsNotFound(err) {
 		return err
 	}
+	if errors.IsNotFound(err) {
+		log.Info("Creating RoleBinding", "name", "project-owner-binding", "namespace", namespace, "owner", owner)
+		rb = r.buildRoleBinding(namespace, owner)
+		return r.Create(ctx, rb)
+	}
+
+	log.Info("RoleBinding already exists", "name", "project-owner-binding", "namespace", namespace)
 	return nil
 }
 
@@ -189,6 +267,46 @@ func (r *ProjectReconciler) buildRoleBinding(namespace string, owner string) *rb
 			Name:     "project-owner",
 		},
 	}
+}
+
+func (r *ProjectReconciler) cleanUpRBAC(ctx context.Context, namespace string) error {
+
+	log := logf.FromContext(ctx)
+
+	log.Info("Starting RBAC cleanup", "namespace", namespace)
+
+	rb := &rbacv1.RoleBinding{}
+	if err := r.Get(ctx, types.NamespacedName{Name: "project-owner-binding", Namespace: namespace}, rb); err == nil {
+		log.Info("Deleting RoleBinding", "name", rb.Name, "namespace", namespace)
+		if err := r.Delete(ctx, rb); err != nil && !errors.IsNotFound(err) {
+			return err
+		}
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+
+	role := &rbacv1.Role{}
+	if err := r.Get(ctx, types.NamespacedName{Name: "project-owner", Namespace: namespace}, role); err == nil {
+		log.Info("Deleting Role", "name", role.Name, "namespace", namespace)
+		if err := r.Delete(ctx, role); err != nil && !errors.IsNotFound(err) {
+			return err
+		}
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+
+	ns := &corev1.Namespace{}
+	if err := r.Get(ctx, types.NamespacedName{Name: namespace}, ns); err == nil {
+		log.Info("Deleting Namespace", "name", ns.Name)
+		if err := r.Delete(ctx, ns); err != nil && !errors.IsNotFound(err) {
+			return err
+		}
+	} else if !errors.IsNotFound(err) {
+		return err
+	}
+
+	log.Info("RBAC cleanup completed", "namespace", namespace)
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
