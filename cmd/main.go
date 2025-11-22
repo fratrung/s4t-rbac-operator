@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	admission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	s4tv1alpha1 "s4t-rbac-operator/api/v1alpha1"
 	"s4t-rbac-operator/internal/controller"
@@ -173,10 +174,17 @@ func main() {
 		// after the manager stops then its usage might be unsafe.
 		// LeaderElectionReleaseOnCancel: true,
 	})
+
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
 	}
+
+	// Mutating Webhook installed on the manager
+	mgr.GetWebhookServer().Register(
+		"/mutate-s4t-s4t-io-project",
+		&admission.Webhook{Handler: &s4tv1alpha1.ProjectMutator{}},
+	)
 
 	if err := (&controller.ProjectReconciler{
 		Client: mgr.GetClient(),
