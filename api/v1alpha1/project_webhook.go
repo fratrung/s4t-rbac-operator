@@ -22,10 +22,6 @@ func (m *ProjectMutator) Handle(ctx context.Context, req admission.Request) admi
 		project.Spec.Owner = req.UserInfo.Username
 	}
 
-	if project.Spec.Namespace == "" {
-		project.Spec.Namespace = project.Spec.ProjectName
-	}
-
 	mutated, err := json.Marshal(project)
 	if err != nil {
 		return admission.Errored(500, err)

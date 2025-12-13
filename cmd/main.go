@@ -38,6 +38,7 @@ import (
 
 	s4tv1alpha1 "s4t-rbac-operator/api/v1alpha1"
 	"s4t-rbac-operator/internal/controller"
+	webhookv1alpha1 "s4t-rbac-operator/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -192,6 +193,13 @@ func main() {
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Project")
 		os.Exit(1)
+	}
+	// nolint:goconst
+	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+		if err := webhookv1alpha1.SetupProjectWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create webhook", "webhook", "Project")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

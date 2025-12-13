@@ -32,7 +32,6 @@ type ProjectSpec struct {
 
 	ProjectName string `json:"projectName"`
 	// ProjectID     string  `json:"projectId"` // <-- maybe is not useful
-	Namespace     string  `json:"namespace"`
 	Owner         string  `json:"owner"` // <--- maybe is not useful
 	AuthSecretRef *string `json:"authSecretRef,omitempty"`
 	S4TEnabled    bool    `json:"s4tEnabled,omitempty"`
@@ -54,19 +53,20 @@ type ProjectStatus struct {
 	// - "Progressing": the resource is being created or updated
 	// - "Degraded": the resource failed to reach or maintain its desired state
 	//
+	NamespaceReady bool   `json:"namespaceReady,omitempty"`
+	RBACReady      bool   `json:"rbacReady,omitempty"`
+	S4TProjectID   string `json:"s4tProjectId,omitempty"`
+	S4TReady       bool   `json:"s4tReady,omitempty"`
 	// The status of each condition is one of True, False, or Unknown.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
-	NamespaceReady bool               `json:"namespaceReady,omitempty"`
-	RBACReady      bool               `json:"rbacReady,omitempty"`
-	S4TProjectID   string             `json:"s4tProjectId,omitempty"`
-	S4TReady       bool               `json:"s4tReady,omitempty"`
-	Conditions     []metav1.Condition `json:"conditions,omitempty"`
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:scope=Cluster
 
 // Project is the Schema for the projects API
 type Project struct {
