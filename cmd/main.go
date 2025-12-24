@@ -34,13 +34,14 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
-	admission "sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	s4tv1alpha1 "s4t-rbac-operator/api/v1alpha1"
 	"s4t-rbac-operator/internal/controller"
 	webhookv1alpha1 "s4t-rbac-operator/internal/webhook/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
+
+const projectMutatePath = "/mutate-s4t-s4t-io-project"
 
 var (
 	scheme   = runtime.NewScheme()
@@ -182,10 +183,10 @@ func main() {
 	}
 
 	// Mutating Webhook installed on the manager
-	mgr.GetWebhookServer().Register(
-		"/mutate-s4t-s4t-io-project",
+	/*mgr.GetWebhookServer().Register(
+		projectMutatePath,
 		&admission.Webhook{Handler: &s4tv1alpha1.ProjectMutator{}},
-	)
+	)*/
 
 	if err := (&controller.ProjectReconciler{
 		Client: mgr.GetClient(),
@@ -194,6 +195,9 @@ func main() {
 		setupLog.Error(err, "unable to create controller", "controller", "Project")
 		os.Exit(1)
 	}
+
+	// nolint:goconst
+
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		if err := webhookv1alpha1.SetupProjectWebhookWithManager(mgr); err != nil {

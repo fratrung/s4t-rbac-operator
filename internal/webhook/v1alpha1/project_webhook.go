@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -36,63 +37,46 @@ var projectlog = logf.Log.WithName("project-resource")
 // SetupProjectWebhookWithManager registers the webhook for Project in the manager.
 func SetupProjectWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).For(&s4tv1alpha1.Project{}).
-		WithValidator(&ProjectCustomValidator{}).
+		WithDefaulter(&ProjectCustomDefaulter{}).
 		Complete()
 }
 
 // TODO(user): EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 
-// TODO(user): change verbs to "verbs=create;update;delete" if you want to enable deletion validation.
-// NOTE: The 'path' attribute must follow a specific pattern and should not be modified directly here.
-// Modifying the path for an invalid path can cause API server errors; failing to locate the webhook.
-// +kubebuilder:webhook:path=/validate-s4t-s4t-io-v1alpha1-project,mutating=false,failurePolicy=fail,sideEffects=None,groups=s4t.s4t.io,resources=projects,verbs=create;update,versions=v1alpha1,name=vproject-v1alpha1.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/mutate-s4t-s4t-io-v1alpha1-project,mutating=true,failurePolicy=fail,sideEffects=None,groups=s4t.s4t.io,resources=projects,verbs=create,versions=v1alpha1,name=mproject-v1alpha1.kb.io,admissionReviewVersions=v1
 
-// ProjectCustomValidator struct is responsible for validating the Project resource
-// when it is created, updated, or deleted.
+// ProjectCustomDefaulter struct is responsible for setting default values on the custom resource of the
+// Kind Project when those are created or updated.
 //
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
-// as this struct is used only for temporary operations and does not need to be deeply copied.
-type ProjectCustomValidator struct {
-	// TODO(user): Add more fields as needed for validation
+// as it is used only for temporary operations and does not need to be deeply copied.
+type ProjectCustomDefaulter struct {
+	// TODO(user): Add more fields as needed for defaulting
 }
 
-var _ webhook.CustomValidator = &ProjectCustomValidator{}
+var _ webhook.CustomDefaulter = &ProjectCustomDefaulter{}
 
-// ValidateCreate implements webhook.CustomValidator so a webhook will be registered for the type Project.
-func (v *ProjectCustomValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
+// Default implements webhook.CustomDefaulter so a webhook will be registered for the Kind Project.
+func (d *ProjectCustomDefaulter) Default(ctx context.Context, obj runtime.Object) error {
 	project, ok := obj.(*s4tv1alpha1.Project)
+
 	if !ok {
-		return nil, fmt.Errorf("expected a Project object but got %T", obj)
+		return fmt.Errorf("expected an Project object but got %T", obj)
 	}
-	projectlog.Info("Validation for Project upon creation", "name", project.GetName())
 
-	// TODO(user): fill in your validation logic upon object creation.
-
-	return nil, nil
-}
-
-// ValidateUpdate implements webhook.CustomValidator so a webhook will be registered for the type Project.
-func (v *ProjectCustomValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
-	project, ok := newObj.(*s4tv1alpha1.Project)
-	if !ok {
-		return nil, fmt.Errorf("expected a Project object for the newObj but got %T", newObj)
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		return err
 	}
-	projectlog.Info("Validation for Project upon update", "name", project.GetName())
 
-	// TODO(user): fill in your validation logic upon object update.
-
-	return nil, nil
-}
-
-// ValidateDelete implements webhook.CustomValidator so a webhook will be registered for the type Project.
-func (v *ProjectCustomValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
-	project, ok := obj.(*s4tv1alpha1.Project)
-	if !ok {
-		return nil, fmt.Errorf("expected a Project object but got %T", obj)
+	user := strings.TrimSpace(req.UserInfo.Username)
+	if user == "" {
+		return fmt.Errorf("cannot determine caller username")
 	}
-	projectlog.Info("Validation for Project upon deletion", "name", project.GetName())
 
-	// TODO(user): fill in your validation logic upon object deletion.
+	project.Spec.Owner = user
 
-	return nil, nil
+	projectlog.Info("Defaulting for Project", "name", project.GetName())
+
+	return nil
 }

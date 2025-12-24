@@ -1,8 +1,8 @@
 ---
 apiVersion: admissionregistration.k8s.io/v1
-kind: ValidatingWebhookConfiguration
+kind: MutatingWebhookConfiguration
 metadata:
-  name: validating-webhook-configuration
+  name: mutating-webhook-configuration
 webhooks:
 - admissionReviewVersions:
   - v1
@@ -10,9 +10,9 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-s4t-s4t-io-v1alpha1-project
+      path: /mutate-s4t-s4t-io-v1alpha1-project
   failurePolicy: Fail
-  name: vproject-v1alpha1.kb.io
+  name: mproject-v1alpha1.kb.io
   rules:
   - apiGroups:
     - s4t.s4t.io
@@ -20,7 +20,6 @@ webhooks:
     - v1alpha1
     operations:
     - CREATE
-    - UPDATE
     resources:
     - projects
   sideEffects: None

@@ -20,6 +20,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+//type ProjectMember struct {
+//	Username string `json:"username,omitempty"`
+//	Role     string `json:"role,omitempty"`
+//}
+
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
@@ -30,11 +35,13 @@ type ProjectSpec struct {
 	// The following markers will use OpenAPI v3 schema to validate the value
 	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
 
+	// +kubebuilder:validation:MinLength=1
 	ProjectName string `json:"projectName"`
 	// ProjectID     string  `json:"projectId"` // <-- maybe is not useful
-	Owner         string  `json:"owner"` // <--- maybe is not useful
-	AuthSecretRef *string `json:"authSecretRef,omitempty"`
-	S4TEnabled    bool    `json:"s4tEnabled,omitempty"`
+
+	// +kubebuilder:validation:MinLength=1
+	Owner string `json:"owner"` // <--- maybe is not useful
+	//Members []ProjectMember `json:"members"`
 }
 
 // ProjectStatus defines the observed state of Project.
@@ -53,10 +60,9 @@ type ProjectStatus struct {
 	// - "Progressing": the resource is being created or updated
 	// - "Degraded": the resource failed to reach or maintain its desired state
 	//
-	NamespaceReady bool   `json:"namespaceReady,omitempty"`
-	RBACReady      bool   `json:"rbacReady,omitempty"`
-	S4TProjectID   string `json:"s4tProjectId,omitempty"`
-	S4TReady       bool   `json:"s4tReady,omitempty"`
+	NamespaceReady bool `json:"namespaceReady,omitempty"`
+	RBACReady      bool `json:"rbacReady,omitempty"`
+	S4TReady       bool `json:"s4tReady,omitempty"`
 	// The status of each condition is one of True, False, or Unknown.
 	// +listType=map
 	// +listMapKey=type

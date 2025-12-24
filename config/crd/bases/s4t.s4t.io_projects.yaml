@@ -39,16 +39,12 @@ spec:
           spec:
             description: spec defines the desired state of Project
             properties:
-              authSecretRef:
-                type: string
               owner:
-                description: ProjectID     string  `json:"projectId"` // <-- maybe
-                  is not useful
+                minLength: 1
                 type: string
               projectName:
+                minLength: 1
                 type: string
-              s4tEnabled:
-                type: boolean
             required:
             - owner
             - projectName
@@ -129,8 +125,6 @@ spec:
                 type: boolean
               rbacReady:
                 type: boolean
-              s4tProjectId:
-                type: string
               s4tReady:
                 type: boolean
             type: object
