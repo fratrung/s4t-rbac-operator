@@ -312,7 +312,6 @@ func (r *ProjectReconciler) buildRoleBindingForGroup(namespace, name, roleName, 
 	}
 }
 
-/*
 func (r *ProjectReconciler) buildRoleBindingForUser(namespace, name, roleName, username string) *rbacv1.RoleBinding {
 	return &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -333,7 +332,6 @@ func (r *ProjectReconciler) buildRoleBindingForUser(namespace, name, roleName, u
 		},
 	}
 }
-*/
 
 func (r *ProjectReconciler) ensureProjectRoleBinding(ctx context.Context, namespace, owner, projectName string) error {
 	// todo: add sanitizer function for build the base var
@@ -363,16 +361,15 @@ func (r *ProjectReconciler) ensureProjectRoleBinding(ctx context.Context, namesp
 		return err
 	}
 
-	// binding temporaneo per l’owner (di solito lo leghi ad admin)
-	/*
-		if strings.TrimSpace(owner) != "" {
-			if err := r.ensureRoleBindingObj(ctx,
-				r.buildRoleBindingForUser(namespace, "s4t-temp-owner-binding", "s4t-admin-project", owner),
-			); err != nil {
-				return err
-			}
-		}*/
+	// binding temporaneo per l’owner
 
+	if strings.TrimSpace(owner) != "" {
+		if err := r.ensureRoleBindingObj(ctx,
+			r.buildRoleBindingForUser(namespace, "s4t-temp-owner-binding", "s4t-admin-project", owner),
+		); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -424,7 +421,7 @@ func (r *ProjectReconciler) cleanRoleBinding(ctx context.Context, namespace stri
 		"s4t-admin-binding",
 		"s4t-member-binding",
 		"s4t-user-binding",
-		// "s4t-temp-owner-binding",
+		"s4t-temp-owner-binding",
 	} {
 		rb := &rbacv1.RoleBinding{}
 		if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, rb); err == nil {

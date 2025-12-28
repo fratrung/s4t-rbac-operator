@@ -28,15 +28,12 @@ var _ = Describe("Project Webhook", func() {
 	var (
 		obj       *s4tv1alpha1.Project
 		oldObj    *s4tv1alpha1.Project
-		validator ProjectCustomValidator
 		defaulter ProjectCustomDefaulter
 	)
 
 	BeforeEach(func() {
 		obj = &s4tv1alpha1.Project{}
 		oldObj = &s4tv1alpha1.Project{}
-		validator = ProjectCustomValidator{}
-		Expect(validator).NotTo(BeNil(), "Expected validator to be initialized")
 		defaulter = ProjectCustomDefaulter{}
 		Expect(defaulter).NotTo(BeNil(), "Expected defaulter to be initialized")
 		Expect(oldObj).NotTo(BeNil(), "Expected oldObj to be initialized")
