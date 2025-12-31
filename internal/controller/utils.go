@@ -41,3 +41,12 @@ func deriveNamespace(owner, projectName string) string {
 func deriveGroupBase(owner, projectName string) string {
 	return fmt.Sprintf("s4t:%s-%s", slugDNS(owner), slugDNS(projectName))
 }
+
+func extractUsernameFromOIDC(oidc string) string {
+	oidc = strings.TrimSpace(oidc)
+	parts := strings.Split(oidc, "#")
+	if len(parts) > 0 {
+		return parts[len(parts)-1]
+	}
+	return oidc
+}

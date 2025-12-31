@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -91,16 +92,19 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	}
 
 	owner := strings.TrimSpace(project.Spec.Owner)
+
 	if owner == "" {
 		log.Info("Project has no owner set; waiting for webhook to populate spec.owner", "project", project.Name)
 		return ctrl.Result{}, nil
 	}
 
+	username := extractUsernameFromOIDC(owner)
+
 	projectName := strings.TrimSpace(project.Spec.ProjectName)
 	if projectName == "" {
 		return r.failStatus(ctx, &project, "InvalidSpec", "spec.projectName is required")
 	}
-	namespace := deriveNamespace(project.Spec.Owner, projectName)
+	namespace := deriveNamespace(username, projectName)
 
 	if err := validateTargetNamespace(namespace); err != nil {
 		return r.failStatus(ctx, &project, "InvalidProjectName", err.Error())
@@ -122,7 +126,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.ensureRoles(ctx, namespace); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.ensureProjectRoleBinding(ctx, namespace, project.Spec.Owner, projectName); err != nil {
+	if err := r.ensureProjectRoleBinding(ctx, namespace, username, projectName); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -156,7 +160,7 @@ func (r *ProjectReconciler) ensureNamespace(ctx context.Context, namespace strin
 
 	if err == nil {
 		log.Info("Namespace already exists", "name", namespace)
-		return fmt.Errorf("namespace %q already exists", namespace)
+		return nil
 	}
 	if !errors.IsNotFound(err) {
 		return err
@@ -189,7 +193,7 @@ func (r *ProjectReconciler) ensureRoles(ctx context.Context, namespace string) e
 	if err := r.ensureRoleObj(ctx, r.buildAdminProjectRole(namespace)); err != nil {
 		return err
 	}
-	if err := r.ensureRoleObj(ctx, r.buildMemberProjectRole(namespace)); err != nil {
+	if err := r.ensureRoleObj(ctx, r.buildManagerProjectRole(namespace)); err != nil {
 		return err
 	}
 	if err := r.ensureRoleObj(ctx, r.buildUserProjectRole(namespace)); err != nil {
@@ -214,10 +218,10 @@ func (r *ProjectReconciler) buildAdminProjectRole(namespace string) *rbacv1.Role
 	}
 }
 
-func (r *ProjectReconciler) buildMemberProjectRole(namespace string) *rbacv1.Role {
+func (r *ProjectReconciler) buildManagerProjectRole(namespace string) *rbacv1.Role {
 	return &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "s4t-member-project",
+			Name:      "s4t-manager-project",
 			Namespace: namespace,
 		},
 		Rules: []rbacv1.PolicyRule{
@@ -312,7 +316,7 @@ func (r *ProjectReconciler) buildRoleBindingForGroup(namespace, name, roleName, 
 	}
 }
 
-func (r *ProjectReconciler) buildRoleBindingForUser(namespace, name, roleName, username string) *rbacv1.RoleBinding {
+func (r *ProjectReconciler) buildRoleBindingForUser(namespace, name, roleName, oidcUser string) *rbacv1.RoleBinding {
 	return &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
@@ -321,7 +325,7 @@ func (r *ProjectReconciler) buildRoleBindingForUser(namespace, name, roleName, u
 		Subjects: []rbacv1.Subject{
 			{
 				Kind:     rbacv1.UserKind,
-				Name:     username,
+				Name:     oidcUser,
 				APIGroup: rbacv1.GroupName,
 			},
 		},
@@ -339,9 +343,9 @@ func (r *ProjectReconciler) ensureProjectRoleBinding(ctx context.Context, namesp
 
 	base := deriveGroupBase(owner, projectName)
 
-	adminGroup := base + ":admin"
-	memberGroup := base + ":member"
-	userGroup := base + ":user"
+	adminGroup := base + ":admin_iot_project"
+	memberGroup := base + ":manager_iot_project"
+	userGroup := base + ":user_iot"
 
 	if err := r.ensureRoleBindingObj(ctx,
 		r.buildRoleBindingForGroup(namespace, "s4t-admin-binding", "s4t-admin-project", adminGroup),
@@ -350,7 +354,7 @@ func (r *ProjectReconciler) ensureProjectRoleBinding(ctx context.Context, namesp
 	}
 
 	if err := r.ensureRoleBindingObj(ctx,
-		r.buildRoleBindingForGroup(namespace, "s4t-member-binding", "s4t-member-project", memberGroup),
+		r.buildRoleBindingForGroup(namespace, "s4t-manager-binding", "s4t-manager-project", memberGroup),
 	); err != nil {
 		return err
 	}
@@ -373,7 +377,38 @@ func (r *ProjectReconciler) ensureProjectRoleBinding(ctx context.Context, namesp
 	return nil
 }
 
+func (r *ProjectReconciler) isNamespaceEmpty(namespace string) bool {
+	ctx := context.Background()
+
+	rbList := &rbacv1.RoleBindingList{}
+	if err := r.List(ctx, rbList, client.InNamespace(namespace)); err != nil {
+		return false
+	}
+	if len(rbList.Items) > 0 {
+		return false
+	}
+
+	roleList := &rbacv1.RoleList{}
+	if err := r.List(ctx, roleList, client.InNamespace(namespace)); err != nil {
+		return false
+	}
+	if len(roleList.Items) > 0 {
+		return false
+	}
+
+	podList := &corev1.PodList{}
+	if err := r.List(ctx, podList, client.InNamespace(namespace)); err != nil {
+		return false
+	}
+	if len(podList.Items) > 0 {
+		return false
+	}
+
+	return true
+}
+
 func (r *ProjectReconciler) handleRBACDeletion(ctx context.Context, project *s4tv1alpha1.Project) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
 	projectName := strings.TrimSpace(project.Spec.ProjectName)
 	owner := strings.TrimSpace(project.Spec.Owner)
 
@@ -381,6 +416,11 @@ func (r *ProjectReconciler) handleRBACDeletion(ctx context.Context, project *s4t
 	if namespace != "" {
 		if err := r.cleanUpRBAC(ctx, namespace); err != nil {
 			return ctrl.Result{}, err
+		}
+
+		if !r.isNamespaceEmpty(namespace) {
+			log.Info("Namespace not yet fully cleaned, requeueing after 5 seconds", "namespace", namespace)
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 		}
 	}
 	controllerutil.RemoveFinalizer(project, projectFinalizer)
@@ -419,7 +459,7 @@ func (r *ProjectReconciler) cleanRoleBinding(ctx context.Context, namespace stri
 	log := logf.FromContext(ctx)
 	for _, name := range []string{
 		"s4t-admin-binding",
-		"s4t-member-binding",
+		"s4t-manager-binding",
 		"s4t-user-binding",
 		"s4t-temp-owner-binding",
 	} {
@@ -440,7 +480,7 @@ func (r *ProjectReconciler) cleanRole(ctx context.Context, namespace string) err
 
 	for _, name := range []string{
 		"s4t-admin-project",
-		"s4t-member-project",
+		"s4t-manager-project",
 		"s4t-user-project",
 	} {
 		role := &rbacv1.Role{}
@@ -472,6 +512,7 @@ func (r *ProjectReconciler) cleanNamespace(ctx context.Context, namespace string
 
 // todo(dev): fix it
 func (r *ProjectReconciler) failStatus(ctx context.Context, project *s4tv1alpha1.Project, reason, msg string) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
 	apimeta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
 		Type:               "Ready",
 		Status:             metav1.ConditionFalse,
@@ -479,7 +520,11 @@ func (r *ProjectReconciler) failStatus(ctx context.Context, project *s4tv1alpha1
 		Reason:             reason,
 		Message:            msg,
 	})
-	_ = r.Status().Update(ctx, project) // best-effort
+	err := r.Status().Update(ctx, project)
+	if err != nil {
+		log.Error(err, "failed to update Project status")
+		return ctrl.Result{Requeue: true}, err
+	}
 	return ctrl.Result{}, fmt.Errorf("%s", msg)
 }
 
