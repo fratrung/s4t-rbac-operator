@@ -61,6 +61,11 @@ func validateTargetNamespace(ns string) error {
 	return nil
 }
 
+type ExternalS4TRequest struct {
+	Endpoint    string
+	ProjectName string
+}
+
 // ProjectReconciler reconciles a Project object
 type ProjectReconciler struct {
 	client.Client
@@ -85,7 +90,11 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{}, err
 	}
 
-	// handle deletion
+	if project.Status.NamespaceReady && project.Status.RBACReady && project.ObjectMeta.DeletionTimestamp.IsZero() {
+		log.V(1).Info("Project already reconciled, skipping", "project", project.Name)
+		return ctrl.Result{}, nil
+	}
+
 	if !project.ObjectMeta.DeletionTimestamp.IsZero() {
 		log.Info("Project resource is being deleted, starting cleanup", "project", project.Name)
 		return r.handleRBACDeletion(ctx, &project)
@@ -115,11 +124,11 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.Update(ctx, &project); err != nil {
 			return ctrl.Result{}, err
 		}
+		return ctrl.Result{Requeue: true}, nil
 	}
 
 	log.Info("Reconciling Project resource", "name", project.Name, "generation", project.Generation)
 
-	// ensure desired resources exist
 	if err := r.ensureNamespace(ctx, namespace); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -144,13 +153,47 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		})
 
 		if err := r.Status().Update(ctx, &project); err != nil {
+			if errors.IsConflict(err) {
+				log.Info("Conflict updating Project status, requeueing")
+				return ctrl.Result{Requeue: true}, nil
+			}
 			return ctrl.Result{}, err
 		}
 	}
+	/*
+		readyCond := apimeta.FindStatusCondition(project.Status.Conditions, "Ready")
+		if readyCond != nil &&
+			readyCond.Status == metav1.ConditionTrue &&
+			readyCond.ObservedGeneration == project.Generation &&
+			readyCond.Reason == "RBACConfigured" {
+			createRequest, err := r.createS4TProjectRequest(&project)
+			if err != nil {
+				log.Info("Request Creation for External Provider failed")
+			}
+			ok := r.sendToExternalProvider(createRequest)
+			if !ok {
+				log.Info("Failed to notify external provider")
+				return ctrl.Result{}, nil
+
+			}
+			extCond := apimeta.FindStatusCondition(project.Status.Conditions, "Ready")
+			if extCond == nil || extCond.Reason != "ExternalSynced" {
+				apimeta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
+					Type:               "Ready",
+					Status:             metav1.ConditionTrue,
+					ObservedGeneration: project.Generation,
+					Reason:             "ExternalSynced",
+					Message:            "Project synced with external provider",
+				})
+				if err := r.Status().Update(ctx, &project); err != nil {
+					return ctrl.Result{}, nil
+				}
+			}
+
+		}
+	*/
 	return ctrl.Result{}, nil
 }
-
-// -------------------------------------- Functions for manage a dinamic RBAC configuration -----------------------------------------------------------------
 
 func (r *ProjectReconciler) ensureNamespace(ctx context.Context, namespace string) error {
 	log := logf.FromContext(ctx)
@@ -159,7 +202,8 @@ func (r *ProjectReconciler) ensureNamespace(ctx context.Context, namespace strin
 	err := r.Get(ctx, types.NamespacedName{Name: namespace}, ns)
 
 	if err == nil {
-		log.Info("Namespace already exists", "name", namespace)
+		log.V(1).Info("Namespace already exists", "name", namespace)
+
 		return nil
 	}
 	if !errors.IsNotFound(err) {
@@ -316,27 +360,28 @@ func (r *ProjectReconciler) buildRoleBindingForGroup(namespace, name, roleName, 
 	}
 }
 
-func (r *ProjectReconciler) buildRoleBindingForUser(namespace, name, roleName, oidcUser string) *rbacv1.RoleBinding {
-	return &rbacv1.RoleBinding{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Subjects: []rbacv1.Subject{
-			{
-				Kind:     rbacv1.UserKind,
-				Name:     oidcUser,
-				APIGroup: rbacv1.GroupName,
+/*
+	func (r *ProjectReconciler) buildRoleBindingForUser(namespace, name, roleName, oidcUser string) *rbacv1.RoleBinding {
+		return &rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: namespace,
 			},
-		},
-		RoleRef: rbacv1.RoleRef{
-			APIGroup: rbacv1.GroupName,
-			Kind:     "Role",
-			Name:     roleName,
-		},
+			Subjects: []rbacv1.Subject{
+				{
+					Kind:     rbacv1.UserKind,
+					Name:     oidcUser,
+					APIGroup: rbacv1.GroupName,
+				},
+			},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "Role",
+				Name:     roleName,
+			},
+		}
 	}
-}
-
+*/
 func (r *ProjectReconciler) ensureProjectRoleBinding(ctx context.Context, namespace, owner, projectName string) error {
 	// todo: add sanitizer function for build the base var
 	//base := fmt.Sprintf("s4t:%s-%s", owner, projectName)
@@ -367,13 +412,13 @@ func (r *ProjectReconciler) ensureProjectRoleBinding(ctx context.Context, namesp
 
 	// binding temporaneo per l’owner
 
-	if strings.TrimSpace(owner) != "" {
+	/*if owner != "" {
 		if err := r.ensureRoleBindingObj(ctx,
 			r.buildRoleBindingForUser(namespace, "s4t-temp-owner-binding", "s4t-admin-project", owner),
 		); err != nil {
 			return err
 		}
-	}
+	}*/
 	return nil
 }
 
@@ -510,7 +555,37 @@ func (r *ProjectReconciler) cleanNamespace(ctx context.Context, namespace string
 	return nil
 }
 
-// todo(dev): fix it
+/*
+	func (r *ProjectReconciler) sendToExternalProvider(request *ExternalS4TRequest) bool {
+		payload := fmt.Sprintf(`{"projectName": "%s"}`, request.ProjectName)
+		body := strings.NewReader(payload)
+		response, err := http.Post(request.Endpoint, "application/json", body)
+		if err != nil {
+			return false
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return false
+		}
+		return true
+	}
+
+	func (r *ProjectReconciler) createS4TProjectRequest(project *s4tv1alpha1.Project) (*ExternalS4TRequest, error) {
+		projectName := project.Spec.ProjectName
+		if projectName == "" {
+			return nil, fmt.Errorf("projectName is empty")
+		}
+
+		var endpoint = "http://127.0.0.1:8787/create-project"
+		return &ExternalS4TRequest{
+			Endpoint:    endpoint,
+			ProjectName: projectName,
+		}, nil
+
+}
+func (r *ProjectReconciler) updateS4TProjectRequest() {}
+func (r *ProjectReconciler) deleteS4TProjectRequest() {}
+*/
 func (r *ProjectReconciler) failStatus(ctx context.Context, project *s4tv1alpha1.Project, reason, msg string) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	apimeta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
