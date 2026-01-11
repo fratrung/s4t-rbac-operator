@@ -50,9 +50,7 @@ func SetupProjectWebhookWithManager(mgr ctrl.Manager) error {
 //
 // NOTE: The +kubebuilder:object:generate=false marker prevents controller-gen from generating DeepCopy methods,
 // as it is used only for temporary operations and does not need to be deeply copied.
-type ProjectCustomDefaulter struct {
-	// TODO(user): Add more fields as needed for defaulting
-}
+type ProjectCustomDefaulter struct{}
 
 var _ webhook.CustomDefaulter = &ProjectCustomDefaulter{}
 
@@ -79,4 +77,58 @@ func (d *ProjectCustomDefaulter) Default(ctx context.Context, obj runtime.Object
 	projectlog.Info("Defaulting for Project", "name", project.GetName())
 
 	return nil
+}
+
+// +kubebuilder:webhook:path=/validate-s4t-s4t-io-v1alpha1-project,mutating=false,failurePolicy=fail,sideEffects=None,groups=s4t.s4t.io,resources=projects,verbs=create;update;delete,versions=v1alpha1,name=vproject-v1alpha1.kb.io,admissionReviewVersions=v1
+type ProjectValidator struct{}
+
+var _ webhook.CustomValidator = &ProjectValidator{}
+
+func (v *ProjectValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	// se ne occupa il Webhook Defaulter a riempire project.owner con il corretto username dell'owner
+	return nil, nil
+}
+
+func (v *ProjectValidator) ValidateUpdate(ctx context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
+	// block all updates and allow only rbac operator updates
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	user := strings.TrimSpace(req.UserInfo.Username)
+
+	if strings.HasPrefix(user, "system:serviceaccount:") {
+		return nil, nil
+	}
+
+	return nil, fmt.Errorf(
+		"updates to Project resources are not allowed; Project is immutable",
+	)
+}
+
+func (v *ProjectValidator) ValidateDelete(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
+	project := obj.(*s4tv1alpha1.Project)
+	req, err := admission.RequestFromContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	user := strings.TrimSpace(req.UserInfo.Username)
+
+	if strings.HasPrefix(user, "system:serviceaccount:") {
+		return nil, nil
+	}
+
+	if user != project.Spec.Owner {
+		return nil, fmt.Errorf("user %s is not owner of project %s", user, project.Name)
+	}
+
+	return nil, nil
+}
+
+func SetupProjectValidationWebhookWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewWebhookManagedBy(mgr).
+		For(&s4tv1alpha1.Project{}).
+		WithValidator(&ProjectValidator{}).
+		Complete()
 }

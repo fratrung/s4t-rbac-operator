@@ -195,11 +195,14 @@ func main() {
 	}
 
 	// nolint:goconst
-
-	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
 		if err := webhookv1alpha1.SetupProjectWebhookWithManager(mgr); err != nil {
-			setupLog.Error(err, "unable to create webhook", "webhook", "Project")
+			setupLog.Error(err, "unable to create mutating webhook", "webhook", "Project")
+			os.Exit(1)
+		}
+
+		if err := webhookv1alpha1.SetupProjectValidationWebhookWithManager(mgr); err != nil {
+			setupLog.Error(err, "unable to create validating webhook", "webhook", "Project")
 			os.Exit(1)
 		}
 	}
