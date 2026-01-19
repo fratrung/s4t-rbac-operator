@@ -61,11 +61,6 @@ func validateTargetNamespace(ns string) error {
 	return nil
 }
 
-type ExternalS4TRequest struct {
-	Endpoint    string
-	ProjectName string
-}
-
 // ProjectReconciler reconciles a Project object
 type ProjectReconciler struct {
 	client.Client
@@ -383,9 +378,6 @@ func (r *ProjectReconciler) buildRoleBindingForGroup(namespace, name, roleName, 
 	}
 */
 func (r *ProjectReconciler) ensureProjectRoleBinding(ctx context.Context, namespace, owner, projectName string) error {
-	// todo: add sanitizer function for build the base var
-	//base := fmt.Sprintf("s4t:%s-%s", owner, projectName)
-
 	base := deriveGroupBase(owner, projectName)
 
 	adminGroup := base + ":admin_iot_project"
@@ -555,6 +547,38 @@ func (r *ProjectReconciler) cleanNamespace(ctx context.Context, namespace string
 	return nil
 }
 
+func (r *ProjectReconciler) failStatus(ctx context.Context, project *s4tv1alpha1.Project, reason, msg string) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+	apimeta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             metav1.ConditionFalse,
+		ObservedGeneration: project.Generation,
+		Reason:             reason,
+		Message:            msg,
+	})
+	err := r.Status().Update(ctx, project)
+	if err != nil {
+		log.Error(err, "failed to update Project status")
+		return ctrl.Result{Requeue: true}, err
+	}
+	return ctrl.Result{}, fmt.Errorf("%s", msg)
+}
+
+// SetupWithManager sets up the controller with the Manager.
+func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&s4tv1alpha1.Project{}).
+		Named("project").
+		Complete(r)
+}
+
+/*
+type ExternalS4TRequest struct {
+	Endpoint    string
+	ProjectName string
+}
+*/
+
 /*
 	func (r *ProjectReconciler) sendToExternalProvider(request *ExternalS4TRequest) bool {
 		payload := fmt.Sprintf(`{"projectName": "%s"}`, request.ProjectName)
@@ -586,27 +610,3 @@ func (r *ProjectReconciler) cleanNamespace(ctx context.Context, namespace string
 func (r *ProjectReconciler) updateS4TProjectRequest() {}
 func (r *ProjectReconciler) deleteS4TProjectRequest() {}
 */
-func (r *ProjectReconciler) failStatus(ctx context.Context, project *s4tv1alpha1.Project, reason, msg string) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
-	apimeta.SetStatusCondition(&project.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
-		Status:             metav1.ConditionFalse,
-		ObservedGeneration: project.Generation,
-		Reason:             reason,
-		Message:            msg,
-	})
-	err := r.Status().Update(ctx, project)
-	if err != nil {
-		log.Error(err, "failed to update Project status")
-		return ctrl.Result{Requeue: true}, err
-	}
-	return ctrl.Result{}, fmt.Errorf("%s", msg)
-}
-
-// SetupWithManager sets up the controller with the Manager.
-func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&s4tv1alpha1.Project{}).
-		Named("project").
-		Complete(r)
-}

@@ -180,12 +180,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Mutating Webhook installed on the manager
-	/*mgr.GetWebhookServer().Register(
-		projectMutatePath,
-		&admission.Webhook{Handler: &s4tv1alpha1.ProjectMutator{}},
-	)*/
-
 	if err := (&controller.ProjectReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
