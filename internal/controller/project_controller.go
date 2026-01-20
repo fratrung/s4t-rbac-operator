@@ -465,10 +465,12 @@ func (r *ProjectReconciler) isNamespaceEmpty(namespace string) bool {
 
 func (r *ProjectReconciler) handleRBACDeletion(ctx context.Context, project *s4tv1alpha1.Project) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
+
 	projectName := strings.TrimSpace(project.Spec.ProjectName)
 	owner := strings.TrimSpace(project.Spec.Owner)
+	username := extractUsernameFromOIDC(owner)
+	namespace := deriveNamespace(username, projectName)
 
-	namespace := deriveNamespace(owner, projectName)
 	if namespace != "" {
 		if err := r.cleanUpRBAC(ctx, namespace); err != nil {
 			return ctrl.Result{}, err
