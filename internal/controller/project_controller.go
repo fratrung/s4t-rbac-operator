@@ -33,6 +33,7 @@ import (
 
 	s4tv1alpha1 "s4t-rbac-operator/api/v1alpha1"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -417,27 +418,45 @@ func (r *ProjectReconciler) ensureProjectRoleBinding(ctx context.Context, namesp
 func (r *ProjectReconciler) isNamespaceEmpty(namespace string) bool {
 	ctx := context.Background()
 
+	// Controlla RoleBinding
 	rbList := &rbacv1.RoleBindingList{}
-	if err := r.List(ctx, rbList, client.InNamespace(namespace)); err != nil {
-		return false
-	}
-	if len(rbList.Items) > 0 {
+	if err := r.List(ctx, rbList, client.InNamespace(namespace)); err != nil || len(rbList.Items) > 0 {
 		return false
 	}
 
+	// Controlla Role
 	roleList := &rbacv1.RoleList{}
-	if err := r.List(ctx, roleList, client.InNamespace(namespace)); err != nil {
-		return false
-	}
-	if len(roleList.Items) > 0 {
+	if err := r.List(ctx, roleList, client.InNamespace(namespace)); err != nil || len(roleList.Items) > 0 {
 		return false
 	}
 
+	// Controlla Pods
 	podList := &corev1.PodList{}
-	if err := r.List(ctx, podList, client.InNamespace(namespace)); err != nil {
+	if err := r.List(ctx, podList, client.InNamespace(namespace)); err != nil || len(podList.Items) > 0 {
 		return false
 	}
-	if len(podList.Items) > 0 {
+
+	// Controlla Deployments
+	deployList := &appsv1.DeploymentList{}
+	if err := r.List(ctx, deployList, client.InNamespace(namespace)); err != nil || len(deployList.Items) > 0 {
+		return false
+	}
+
+	// Controlla Services
+	svcList := &corev1.ServiceList{}
+	if err := r.List(ctx, svcList, client.InNamespace(namespace)); err != nil || len(svcList.Items) > 0 {
+		return false
+	}
+
+	// Controlla PVC
+	pvcList := &corev1.PersistentVolumeClaimList{}
+	if err := r.List(ctx, pvcList, client.InNamespace(namespace)); err != nil || len(pvcList.Items) > 0 {
+		return false
+	}
+
+	// Controlla ConfigMaps
+	cmList := &corev1.ConfigMapList{}
+	if err := r.List(ctx, cmList, client.InNamespace(namespace)); err != nil || len(cmList.Items) > 0 {
 		return false
 	}
 
