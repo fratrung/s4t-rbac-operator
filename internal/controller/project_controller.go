@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -99,7 +100,7 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	owner := strings.TrimSpace(project.Spec.Owner)
 
 	if owner == "" {
-		log.Info("Project has no owner set; waiting for webhook to populate spec.owner", "project", project.Name)
+		log.V(1).Info("Waiting for owner to be populated by webhook")
 		return ctrl.Result{}, nil
 	}
 
@@ -128,14 +129,13 @@ func (r *ProjectReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.ensureNamespace(ctx, namespace); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.ensureRoles(ctx, namespace); err != nil {
+	if err := r.ensureRoles(ctx, &project, namespace); err != nil {
 		return ctrl.Result{}, err
 	}
-	if err := r.ensureProjectRoleBinding(ctx, namespace, username, projectName); err != nil {
+	if err := r.ensureProjectRoleBinding(ctx, &project, namespace, username, projectName); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// update status (only if needed)
 	changed := !project.Status.NamespaceReady || !project.Status.RBACReady
 	if changed {
 		project.Status.NamespaceReady = true
@@ -213,30 +213,41 @@ func (r *ProjectReconciler) ensureNamespace(ctx context.Context, namespace strin
 	})
 }
 
-func (r *ProjectReconciler) ensureRoleObj(ctx context.Context, desired *rbacv1.Role) error {
+func (r *ProjectReconciler) ensureRoleObj(ctx context.Context, project *s4tv1alpha1.Project, desired *rbacv1.Role) error {
 	log := logf.FromContext(ctx)
+
+	if err := controllerutil.SetControllerReference(project, desired, r.Scheme); err != nil {
+		return err
+	}
 
 	existing := &rbacv1.Role{}
 	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
-	if err != nil && !errors.IsNotFound(err) {
+	if errors.IsNotFound(err) {
+		log.Info("Creating Role", "name", desired.Name)
+		return r.Create(ctx, desired)
+	}
+	if err != nil {
 		return err
 	}
-	if errors.IsNotFound(err) {
-		log.Info("Creating Role", "name", desired.Name, "namespace", desired.Namespace)
-		return r.Create(ctx, desired)
+
+	if !reflect.DeepEqual(existing.Rules, desired.Rules) {
+		patch := client.MergeFrom(existing.DeepCopy())
+		existing.Rules = desired.Rules
+		log.Info("Updating Role rules", "name", desired.Name)
+		return r.Patch(ctx, existing, patch)
 	}
 
 	return nil
 }
 
-func (r *ProjectReconciler) ensureRoles(ctx context.Context, namespace string) error {
-	if err := r.ensureRoleObj(ctx, r.buildAdminProjectRole(namespace)); err != nil {
+func (r *ProjectReconciler) ensureRoles(ctx context.Context, project *s4tv1alpha1.Project, namespace string) error {
+	if err := r.ensureRoleObj(ctx, project, r.buildAdminProjectRole(namespace)); err != nil {
 		return err
 	}
-	if err := r.ensureRoleObj(ctx, r.buildManagerProjectRole(namespace)); err != nil {
+	if err := r.ensureRoleObj(ctx, project, r.buildManagerProjectRole(namespace)); err != nil {
 		return err
 	}
-	if err := r.ensureRoleObj(ctx, r.buildUserProjectRole(namespace)); err != nil {
+	if err := r.ensureRoleObj(ctx, project, r.buildUserProjectRole(namespace)); err != nil {
 		return err
 	}
 	return nil
@@ -307,32 +318,39 @@ func (r *ProjectReconciler) buildUserProjectRole(namespace string) *rbacv1.Role 
 	}
 }
 
-func (r *ProjectReconciler) ensureRoleBindingObj(ctx context.Context, desired *rbacv1.RoleBinding) error {
+func (r *ProjectReconciler) ensureRoleBindingObj(ctx context.Context, project *s4tv1alpha1.Project, desired *rbacv1.RoleBinding) error {
 	log := logf.FromContext(ctx)
-	existing_rb := &rbacv1.RoleBinding{}
-	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing_rb)
-	if err != nil && !errors.IsNotFound(err) {
+
+	if err := controllerutil.SetControllerReference(project, desired, r.Scheme); err != nil {
 		return err
 	}
 
+	existing := &rbacv1.RoleBinding{}
+	err := r.Get(ctx, types.NamespacedName{Name: desired.Name, Namespace: desired.Namespace}, existing)
 	if errors.IsNotFound(err) {
-		log.Info("Creating RoleBinding", "name", desired.Name, "namespace", desired.Namespace)
+		log.Info("Creating RoleBinding", "name", desired.Name)
 		return r.Create(ctx, desired)
 	}
+	if err != nil {
+		return err
+	}
 
-	if existing_rb.RoleRef.APIGroup != desired.RoleRef.APIGroup ||
-		existing_rb.RoleRef.Kind != desired.RoleRef.Kind ||
-		existing_rb.RoleRef.Name != desired.RoleRef.Name {
-		log.Info("RoleBinfing RoleRef changed (immutable) - recreating", "name", desired.Name, "namespace", desired.Namespace)
-		if err := r.Delete(ctx, existing_rb); err != nil && !errors.IsNotFound(err) {
+	if existing.RoleRef != desired.RoleRef {
+		log.Info("RoleRef changed, recreating RoleBinding", "name", desired.Name)
+		if err := r.Delete(ctx, existing); err != nil && !errors.IsNotFound(err) {
 			return err
 		}
 		return r.Create(ctx, desired)
 	}
 
-	patch := client.MergeFrom(existing_rb.DeepCopy())
-	existing_rb.Subjects = desired.Subjects
-	return r.Patch(ctx, existing_rb, patch)
+	if !reflect.DeepEqual(existing.Subjects, desired.Subjects) {
+		patch := client.MergeFrom(existing.DeepCopy())
+		existing.Subjects = desired.Subjects
+		log.Info("Updating RoleBinding subjects", "name", desired.Name)
+		return r.Patch(ctx, existing, patch)
+	}
+
+	return nil
 }
 
 func (r *ProjectReconciler) buildRoleBindingForGroup(namespace, name, roleName, group string) *rbacv1.RoleBinding {
@@ -356,111 +374,53 @@ func (r *ProjectReconciler) buildRoleBindingForGroup(namespace, name, roleName, 
 	}
 }
 
-/*
-	func (r *ProjectReconciler) buildRoleBindingForUser(namespace, name, roleName, oidcUser string) *rbacv1.RoleBinding {
-		return &rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      name,
-				Namespace: namespace,
-			},
-			Subjects: []rbacv1.Subject{
-				{
-					Kind:     rbacv1.UserKind,
-					Name:     oidcUser,
-					APIGroup: rbacv1.GroupName,
-				},
-			},
-			RoleRef: rbacv1.RoleRef{
-				APIGroup: rbacv1.GroupName,
-				Kind:     "Role",
-				Name:     roleName,
-			},
-		}
-	}
-*/
-func (r *ProjectReconciler) ensureProjectRoleBinding(ctx context.Context, namespace, owner, projectName string) error {
+func (r *ProjectReconciler) ensureProjectRoleBinding(ctx context.Context, project *s4tv1alpha1.Project, namespace, owner, projectName string) error {
 	base := deriveGroupBase(owner, projectName)
 
 	adminGroup := base + ":admin_iot_project"
 	memberGroup := base + ":manager_iot_project"
 	userGroup := base + ":user_iot"
 
-	if err := r.ensureRoleBindingObj(ctx,
+	if err := r.ensureRoleBindingObj(ctx, project,
 		r.buildRoleBindingForGroup(namespace, "s4t-admin-binding", "s4t-admin-project", adminGroup),
 	); err != nil {
 		return err
 	}
 
-	if err := r.ensureRoleBindingObj(ctx,
+	if err := r.ensureRoleBindingObj(ctx, project,
 		r.buildRoleBindingForGroup(namespace, "s4t-manager-binding", "s4t-manager-project", memberGroup),
 	); err != nil {
 		return err
 	}
 
-	if err := r.ensureRoleBindingObj(ctx,
+	if err := r.ensureRoleBindingObj(ctx, project,
 		r.buildRoleBindingForGroup(namespace, "s4t-user-binding", "s4t-user-project", userGroup),
 	); err != nil {
 		return err
 	}
-
-	// binding temporaneo per l’owner
-
-	/*if owner != "" {
-		if err := r.ensureRoleBindingObj(ctx,
-			r.buildRoleBindingForUser(namespace, "s4t-temp-owner-binding", "s4t-admin-project", owner),
-		); err != nil {
-			return err
-		}
-	}*/
 	return nil
 }
 
-func (r *ProjectReconciler) isNamespaceEmpty(namespace string) bool {
-	ctx := context.Background()
-
-	// Controlla RoleBinding
-	rbList := &rbacv1.RoleBindingList{}
-	if err := r.List(ctx, rbList, client.InNamespace(namespace)); err != nil || len(rbList.Items) > 0 {
-		return false
+func (r *ProjectReconciler) isNamespaceEmpty(ctx context.Context, namespace string) (bool, error) {
+	checks := []client.ObjectList{
+		&rbacv1.RoleBindingList{},
+		&rbacv1.RoleList{},
+		&corev1.PodList{},
+		&appsv1.DeploymentList{},
+		&corev1.ServiceList{},
+		&corev1.PersistentVolumeClaimList{},
+		&corev1.ConfigMapList{},
 	}
 
-	// Controlla Role
-	roleList := &rbacv1.RoleList{}
-	if err := r.List(ctx, roleList, client.InNamespace(namespace)); err != nil || len(roleList.Items) > 0 {
-		return false
+	for _, list := range checks {
+		if err := r.List(ctx, list, client.InNamespace(namespace)); err != nil {
+			return false, err
+		}
+		if apimeta.LenList(list) > 0 {
+			return false, nil
+		}
 	}
-
-	// Controlla Pods
-	podList := &corev1.PodList{}
-	if err := r.List(ctx, podList, client.InNamespace(namespace)); err != nil || len(podList.Items) > 0 {
-		return false
-	}
-
-	// Controlla Deployments
-	deployList := &appsv1.DeploymentList{}
-	if err := r.List(ctx, deployList, client.InNamespace(namespace)); err != nil || len(deployList.Items) > 0 {
-		return false
-	}
-
-	// Controlla Services
-	svcList := &corev1.ServiceList{}
-	if err := r.List(ctx, svcList, client.InNamespace(namespace)); err != nil || len(svcList.Items) > 0 {
-		return false
-	}
-
-	// Controlla PVC
-	pvcList := &corev1.PersistentVolumeClaimList{}
-	if err := r.List(ctx, pvcList, client.InNamespace(namespace)); err != nil || len(pvcList.Items) > 0 {
-		return false
-	}
-
-	// Controlla ConfigMaps
-	cmList := &corev1.ConfigMapList{}
-	if err := r.List(ctx, cmList, client.InNamespace(namespace)); err != nil || len(cmList.Items) > 0 {
-		return false
-	}
-
-	return true
+	return true, nil
 }
 
 func (r *ProjectReconciler) handleRBACDeletion(ctx context.Context, project *s4tv1alpha1.Project) (ctrl.Result, error) {
@@ -476,9 +436,17 @@ func (r *ProjectReconciler) handleRBACDeletion(ctx context.Context, project *s4t
 			return ctrl.Result{}, err
 		}
 
-		if !r.isNamespaceEmpty(namespace) {
+		empty, err := r.isNamespaceEmpty(ctx, namespace)
+		if err != nil {
+			log.Error(err, "Failed to check if namespace if empty")
+			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+		if !empty {
 			log.Info("Namespace not yet fully cleaned, requeueing after 5 seconds", "namespace", namespace)
 			return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
+		}
+		if err := r.cleanNamespace(ctx, namespace); err != nil {
+			return ctrl.Result{}, err
 		}
 	}
 	controllerutil.RemoveFinalizer(project, projectFinalizer)
@@ -502,13 +470,14 @@ func (r *ProjectReconciler) cleanUpRBAC(ctx context.Context, namespace string) e
 	if cleanRoleError != nil {
 		return cleanRoleError
 	}
+	/*
+		cleanNamespaceError := r.cleanNamespace(ctx, namespace)
+		if cleanNamespaceError != nil {
+			return cleanNamespaceError
+		}
 
-	cleanNamespaceError := r.cleanNamespace(ctx, namespace)
-	if cleanNamespaceError != nil {
-		return cleanNamespaceError
-	}
-
-	log.Info("RBAC cleanup completed", "namespace", namespace)
+		log.Info("RBAC cleanup completed", "namespace", namespace)
+	*/
 	return nil
 
 }
@@ -519,7 +488,6 @@ func (r *ProjectReconciler) cleanRoleBinding(ctx context.Context, namespace stri
 		"s4t-admin-binding",
 		"s4t-manager-binding",
 		"s4t-user-binding",
-		"s4t-temp-owner-binding",
 	} {
 		rb := &rbacv1.RoleBinding{}
 		if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, rb); err == nil {
@@ -580,15 +548,17 @@ func (r *ProjectReconciler) failStatus(ctx context.Context, project *s4tv1alpha1
 	err := r.Status().Update(ctx, project)
 	if err != nil {
 		log.Error(err, "failed to update Project status")
-		return ctrl.Result{Requeue: true}, err
+		return ctrl.Result{RequeueAfter: 2 * time.Second}, err
 	}
-	return ctrl.Result{}, fmt.Errorf("%s", msg)
+	return ctrl.Result{}, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *ProjectReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&s4tv1alpha1.Project{}).
+		Owns(&rbacv1.Role{}).
+		Owns(&rbacv1.RoleBinding{}).
 		Named("project").
 		Complete(r)
 }
